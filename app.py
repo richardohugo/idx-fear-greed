@@ -13,6 +13,7 @@ Deploy to Streamlit Community Cloud:
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -24,9 +25,12 @@ from indicators import (
     USDIDR,
     classify,
     compute_all,
+    compute_history,
     fetch_bond_proxy,
     fetch_history,
 )
+
+WIB = ZoneInfo("Asia/Jakarta")
 from news import aggregate_sentiment, fetch_headlines
 
 
@@ -141,6 +145,45 @@ def color_for_score(score: float) -> str:
     return "#1a9850"      # deep green
 
 
+def build_history_chart(hist: pd.DataFrame) -> go.Figure:
+    """JCI level (left axis, filled area) vs Fear & Greed index (right axis,
+    0-100 line) over the last year, daily."""
+    months = hist.index.to_period("M").unique().to_timestamp()[::2]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=hist.index, y=hist["jci"], name="JCI LEVEL",
+        line=dict(color="#5a5a63", width=1),
+        fill="tozeroy", fillcolor="rgba(110,110,122,0.22)",
+        hovertemplate="JCI %{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=hist.index, y=hist["fng"], name="FEAR & GREED INDEX", yaxis="y2",
+        line=dict(color="#3fd0bd", width=1.8),
+        hovertemplate="F&G %{y:.0f}<extra></extra>",
+    ))
+    jlo, jhi = float(hist["jci"].min()), float(hist["jci"].max())
+    pad = (jhi - jlo) * 0.10
+    fig.update_layout(
+        paper_bgcolor="#0a0a0a", plot_bgcolor="#0a0a0a", height=430,
+        margin=dict(l=10, r=10, t=24, b=10),
+        font=dict(family="JetBrains Mono, monospace", size=11, color="#888"),
+        yaxis=dict(range=[jlo - pad, jhi + pad], gridcolor="#1c1c1c",
+                   tickformat=",.0f", zeroline=False),
+        yaxis2=dict(overlaying="y", side="right", range=[0, 100],
+                    tickvals=[0, 25, 50, 75, 100], showgrid=False,
+                    zeroline=False),
+        xaxis=dict(gridcolor="#161616", zeroline=False, tickangle=0,
+                   tickfont=dict(size=9),
+                   tickvals=months,
+                   ticktext=[d.strftime("%b-%y").upper() for d in months]),
+        legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.14,
+                    font=dict(size=10, color="#aaa")),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#111", font=dict(family="JetBrains Mono")),
+    )
+    return fig
+
+
 def build_gauge(score: float, label: str) -> go.Figure:
     """Speedometer-style gauge using Plotly."""
     fig = go.Figure(
@@ -193,11 +236,14 @@ def build_gauge(score: float, label: str) -> go.Figure:
 
 @st.cache_data(ttl=60 * 60 * 2)  # 2 hours — reduce load on upstream sources
 def load_market_data():
-    jci = fetch_history([JCI], period="2y")[JCI]
-    idx80 = fetch_history(IDX80_TICKERS, period="2y")
-    usdidr = fetch_history([USDIDR], period="2y")[USDIDR]
+    # 3 years so the 1-year history chart has a full percentile window
+    # behind its earliest displayed day
+    jci = fetch_history([JCI], period="3y")[JCI]
+    idx80 = fetch_history(IDX80_TICKERS, period="3y")
+    usdidr = fetch_history([USDIDR], period="3y")[USDIDR]
     bond_series, bond_source = fetch_bond_proxy()
-    return jci, idx80, usdidr, bond_series, bond_source
+    history = compute_history(jci, idx80, usdidr, days=252)
+    return jci, idx80, usdidr, bond_series, bond_source, history
 
 
 @st.cache_data(ttl=60 * 60 * 2)
@@ -232,7 +278,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 # Load
 with st.spinner("Fetching market data..."):
     try:
-        jci, idx80, usdidr, bond_series, bond_source = load_market_data()
+        jci, idx80, usdidr, bond_series, bond_source, history = load_market_data()
         indicators, headline_score = compute_all(jci, idx80, usdidr, bond_series, bond_source)
     except Exception as e:  # noqa: BLE001
         st.error(f"Failed to load market data: {e}")
@@ -260,7 +306,7 @@ with col_numbers:
     )
     st.markdown(
         f'<div style="color:#666; font-size:0.75rem; margin-top:1rem; letter-spacing:0.1em;">'
-        f'AS OF {datetime.now().strftime("%d %b %Y, %H:%M WIB")}'
+        f'AS OF {datetime.now(WIB).strftime("%d %b %Y, %H:%M WIB")}'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -304,6 +350,23 @@ for ind in indicators:
         """,
         unsafe_allow_html=True,
     )
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# Historical context: JCI level vs the index, 1 year daily
+st.markdown("## JCI vs Fear & Greed")
+st.markdown(
+    '<div style="color:#666; font-size:0.8rem; margin-bottom:0.6rem;">'
+    "1Y · DAILY. Each day is scored with the same five indicators, using only "
+    "data available on that day."
+    "</div>",
+    unsafe_allow_html=True,
+)
+if len(history) >= 30:
+    st.plotly_chart(build_history_chart(history), use_container_width=True,
+                    config={"displayModeBar": False})
+else:
+    st.caption("Not enough history yet for the 1-year chart.")
 
 st.markdown("<br>", unsafe_allow_html=True)
 

@@ -1,5 +1,11 @@
 """
-IDX Fear & Greed indicators — v2.1.
+IDX Fear & Greed indicators — v2.2.
+
+Changes from v2.1:
+    * IDX80 constituents updated to the BEI evaluation effective 4 May 2026
+      (in: BKSL, CBDK, DEWA, GGRM, TPIA; out: BREN, BTPS, DSSA, MTEL, NCKL)
+    * compute_history(): point-in-time daily history of the headline index,
+      powering the JCI vs Fear & Greed 1-year chart
 
 Changes from v2:
     * Bond proxy disabled — IDX bond ETFs on yfinance (XBND, XISB, XMGB)
@@ -31,22 +37,23 @@ logger = logging.getLogger(__name__)
 
 
 # IDX80 constituents used for breadth / strength calculations.
-# Source: Kontan (https://www.kontan.co.id/indeks-idx80)
-# Effective period: 2 February 2026 – 30 April 2026
+# Source: BEI evaluation effective 4 May 2026 (next evaluation August 2026);
+# in: BKSL, CBDK, DEWA, GGRM, TPIA / out: BREN, BTPS, DSSA, MTEL, NCKL.
+# https://www.bareksa.com/berita/saham/2026-04-24/idx30-lq45-hingga-idx80-dirombak-bei-ini-daftar-saham-masuk-dan-keluar-mei-2026
 IDX80_TICKERS = [
     "AADI.JK", "ACES.JK", "ADMR.JK", "ADRO.JK", "AKRA.JK", "AMMN.JK",
     "AMRT.JK", "ANTM.JK", "ARTO.JK", "ASII.JK", "BBCA.JK", "BBNI.JK",
-    "BBRI.JK", "BBTN.JK", "BMRI.JK", "BREN.JK", "BRMS.JK", "BRPT.JK",
-    "BSDE.JK", "BTPS.JK", "BUKA.JK", "BUMI.JK", "CMRY.JK", "CPIN.JK",
-    "CTRA.JK", "CUAN.JK", "DSNG.JK", "DSSA.JK", "ELSA.JK", "EMTK.JK",
-    "ENRG.JK", "ERAA.JK", "ESSA.JK", "EXCL.JK", "GOTO.JK", "HEAL.JK",
-    "HRTA.JK", "HRUM.JK", "ICBP.JK", "INCO.JK", "INDF.JK", "INDY.JK",
-    "INKP.JK", "INTP.JK", "ISAT.JK", "ITMG.JK", "JPFA.JK", "JSMR.JK",
-    "KIJA.JK", "KLBF.JK", "KPIG.JK", "MAPA.JK", "MAPI.JK", "MBMA.JK",
-    "MDKA.JK", "MEDC.JK", "MIKA.JK", "MTEL.JK", "MYOR.JK", "NCKL.JK",
-    "PANI.JK", "PGAS.JK", "PGEO.JK", "PNLF.JK", "PTBA.JK", "PTRO.JK",
-    "PWON.JK", "RAJA.JK", "RATU.JK", "SCMA.JK", "SIDO.JK", "SMGR.JK",
-    "SMRA.JK", "SSIA.JK", "TAPG.JK", "TLKM.JK", "TOWR.JK", "UNTR.JK",
+    "BBRI.JK", "BBTN.JK", "BKSL.JK", "BMRI.JK", "BRMS.JK", "BRPT.JK",
+    "BSDE.JK", "BUKA.JK", "BUMI.JK", "CBDK.JK", "CMRY.JK", "CPIN.JK",
+    "CTRA.JK", "CUAN.JK", "DEWA.JK", "DSNG.JK", "ELSA.JK", "EMTK.JK",
+    "ENRG.JK", "ERAA.JK", "ESSA.JK", "EXCL.JK", "GGRM.JK", "GOTO.JK",
+    "HEAL.JK", "HRTA.JK", "HRUM.JK", "ICBP.JK", "INCO.JK", "INDF.JK",
+    "INDY.JK", "INKP.JK", "INTP.JK", "ISAT.JK", "ITMG.JK", "JPFA.JK",
+    "JSMR.JK", "KIJA.JK", "KLBF.JK", "KPIG.JK", "MAPA.JK", "MAPI.JK",
+    "MBMA.JK", "MDKA.JK", "MEDC.JK", "MIKA.JK", "MYOR.JK", "PANI.JK",
+    "PGAS.JK", "PGEO.JK", "PNLF.JK", "PTBA.JK", "PTRO.JK", "PWON.JK",
+    "RAJA.JK", "RATU.JK", "SCMA.JK", "SIDO.JK", "SMGR.JK", "SMRA.JK",
+    "SSIA.JK", "TAPG.JK", "TLKM.JK", "TOWR.JK", "TPIA.JK", "UNTR.JK",
     "UNVR.JK", "WIFI.JK",
 ]
 
@@ -238,3 +245,71 @@ def classify(score: float) -> str:
     if score < 75:
         return "Greed"
     return "Extreme Greed"
+
+
+# ---------------------------------------------------------------------------
+# Historical series (for the JCI vs Fear & Greed chart)
+# ---------------------------------------------------------------------------
+
+def _percentile_series(s: pd.Series, lookback: int = LOOKBACK_DAYS) -> pd.Series:
+    """Rolling version of _percentile_score: for each day, the score of that
+    day's value inside its own trailing window, winsorised the same way.
+    Each day uses only data available on that day, so there is no look-ahead."""
+    def f(win: np.ndarray) -> float:
+        if np.isnan(win[-1]):
+            return np.nan
+        w = win[~np.isnan(win)]
+        if len(w) < 20:
+            return np.nan
+        lo, hi = np.quantile(w, WINSOR_LOW), np.quantile(w, WINSOR_HIGH)
+        w = np.clip(w, lo, hi)
+        cur = np.clip(win[-1], lo, hi)
+        return float(np.clip((w < cur).sum() / len(w) * 100, 0, 100))
+    return s.rolling(lookback, min_periods=20).apply(f, raw=True)
+
+
+def compute_history(jci: pd.Series, idx80: pd.DataFrame, usdidr: pd.Series,
+                    days: int = 252) -> pd.DataFrame:
+    """Daily history of the headline index over the last `days` trading days.
+
+    Applies the same five formulas as the live indicators, day by day,
+    point-in-time. Needs roughly 3 years of price history to produce a full
+    1-year series (125d MA plus a 252d percentile window behind the earliest
+    displayed day). Returns a DataFrame with columns ['jci', 'fng'].
+    """
+    # 1. momentum: JCI gap vs 125d MA, percentile-ranked
+    ma125 = jci.rolling(125).mean()
+    gap = (jci - ma125) / ma125 * 100
+    s_mom = _percentile_series(gap)
+
+    # 2. strength: 52w highs vs lows across IDX80 (directly scored, no rank)
+    hi52 = idx80.rolling(252, min_periods=1).max()
+    lo52 = idx80.rolling(252, min_periods=1).min()
+    near_hi = (idx80 >= hi52 * 0.98).sum(axis=1)
+    near_lo = (idx80 <= lo52 * 1.02).sum(axis=1)
+    total = idx80.notna().sum(axis=1).replace(0, np.nan)
+    s_str = (((near_hi - near_lo) / total) + 1) / 2 * 100
+
+    # 3. breadth: 10d smoothed advance/decline ratio, percentile-ranked
+    rets = idx80.pct_change()
+    adv = (rets > 0).sum(axis=1)
+    dec = (rets < 0).sum(axis=1)
+    ad = (adv - dec) / (adv + dec).replace(0, np.nan)
+    s_brd = _percentile_series(ad.ewm(span=10, adjust=False).mean())
+
+    # 4. volatility: JCI EWMA vol, percentile-ranked and inverted
+    r = jci.pct_change()
+    evol = np.sqrt(r.ewm(alpha=1 - EWMA_LAMBDA, adjust=False).var() * 252) * 100
+    s_vol = 100 - _percentile_series(evol)
+
+    # 5. safe haven: USD/IDR 20d move, inverted, aligned to JCI trading days
+    fx = usdidr.pct_change(20) * 100
+    s_fx = (100 - _percentile_series(fx)).reindex(jci.index).ffill()
+
+    scores = pd.concat(
+        {"momentum": s_mom, "strength": s_str, "breadth": s_brd,
+         "volatility": s_vol, "safe_haven": s_fx}, axis=1,
+    ).reindex(jci.index)
+    fng = scores.mean(axis=1, skipna=False)      # require all five components
+    out = pd.DataFrame({"jci": jci, "fng": fng}).dropna()
+    return out.tail(days)

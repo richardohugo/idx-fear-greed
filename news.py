@@ -20,7 +20,7 @@ import feedparser
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 # Identify ourselves — good citizenship, makes enforcement less likely
-USER_AGENT = "IDXFearGreed/1.0 (educational/research; github.com/YOUR_USERNAME/idx-fear-greed)"
+USER_AGENT = "IDXFearGreed/1.0 (educational/research; github.com/richardohugo/idx-fear-greed)"
 
 
 QUERIES = [
